@@ -1,0 +1,1 @@
+{"rnn_layers": 2, "rnn_size": 128, "rnn_bidirectional": true, "max_length": 40, "max_words": 10000, "dim_embeddings": 100, "word_level": false, "single_text": false, "name": "cnn4", "weights_path": "./mod/cnn4_weights.hdf5", "config_path": "./mod/cnn4_config.json", "vocab_path": "./mod/cnn4_vocab.json"}

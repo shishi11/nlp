@@ -10,8 +10,8 @@ from jieba.posseg import pair
 import pyltp
 
 APP_ID = '11235055'
-API_KEY = 'bV6xo4QkDRPFy0Ux86Vik6H9'
-SECRET_KEY = 'CrrBHbVZOzXK32XrzGXaP7Ggl5VtM0E2'
+API_KEY = 'bV6xo4QkDRPFy0Ux86Viw6H9'
+SECRET_KEY = 'CrrBHbVZOzXK32XrzGXaP7Ggl3VtM0E2'
 
 client = AipNlp(APP_ID, API_KEY, SECRET_KEY)
 

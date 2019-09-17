@@ -1,17 +1,13 @@
 # -*- coding:utf-8 -*-
 # import pynlpir
-from aip.nlp import AipNlp
-# from aip import base.A
-# from ocr import AipOcr
+from aip import AipNlp
 from bosonnlp import BosonNLP
 from jieba import posseg
 from jieba.posseg import pair
 
-import pyltp
-
 APP_ID = '11235055'
-API_KEY = 'bV6xo4QkDRPFy0Ux86Viw6H9'
-SECRET_KEY = 'CrrBHbVZOzXK32XrzGXaP7Ggl3VtM0E2'
+API_KEY = 'bV6xo4QkDRPFy0Ux86Vik6H9'
+SECRET_KEY = 'CrrBHbVZOzXK32XrzGXaP7Ggl5VtM0E2'
 
 client = AipNlp(APP_ID, API_KEY, SECRET_KEY)
 
@@ -57,7 +53,7 @@ json1={'log_id': 5351067027069976570, 'word': '十年', 'vec': [0.284325, 0.2467
  0.123827, 0.0782014, -0.150602, -0.00504032, -0.111891, 0.0950747, -0.0631985, 0.215788, 0.142335, -0.108046, -0.152028, -0.111842, 0.0504348, 0.0128978, 0.0522977, -0.209837, 0.159769, 0.0381906, 0.00741702, -0.109153, 0.0870181, 0.136201, 0.188177, -0.071041, -0.0132081, -0.116421, -0.0104274, 0.0944911, 0.168561, -0.0980741, -0.0446614, -0.0103312, -0.0608724, -0.0852678, -0.0456349, 0.0559075, -0.0551899, -0.100452, -0.00448219, -0.102358, 0.171519, -0.162117, -0.0900693, -0.101536, -0.00539388, 0.124286, -0.109693, 0.246063, -0.11034, -0.00190697, 0.0892218, 0.106342, 0.12314, -0.0555064, -0.103338, 0.100125, -0.196961, -0.025753, -0.00278403, -0.0981504, -0.0577061, -0.0827057
 , 0.0758681, 0.00933263, 0.0561373, -0.238222, 0.0161437, -0.00102386, 0.0864013, 0.0643768, -0.121894, 0.0213798, 0.112736, 0.0209747, -0.0471288, 0.10865, 0.0572824, -0.00464534, -0.0321385, 0.134267, -0.114082, -0.0443887]}
 
-print(json1)
+# print(json1)
 
 
 
@@ -459,23 +455,67 @@ result = [{'word': ['在', '华盛顿', '期间', '，', '习', '主席', '还',
 # print(result)
 
 #########################################另一种分词，也可加自定义库，但没有词性
-import pkuseg
-# seg = pkuseg.pkuseg()				#以默认配置加载模型
-# text = seg.cut('在华盛顿期间，习主席还先后会见了前来参加本届核安全峰会的丹麦首相拉斯穆森、韩国总统朴槿惠和阿根廷总统马克里，并出席了伊核问题六国机制领导人会议。')	#进行分词
-
+# import pkuseg
+# seg = pkuseg.pkuseg(model_name='news')				#以默认配置加载模型
+# text = seg.cut(''
+#                '')	#进行分词
+# # pkuseg.toolbo
 # print(text)
-ltpparser = pyltp.Postagger()
-ltpparser.load('/home/shifei/TextGrapher/ltp_data_v3.4.0/pos.model')
-segmentor = pyltp.Segmentor()
-segmentor.load_with_lexicon('/home/shifei/TextGrapher/ltp_data_v3.4.0/cws.model','./resources/kenlm_dict.txt')
-# segmentor.load_with_lexicon()
 
-words=segmentor.segment('在华盛顿期间，习主席还先后会见了前来参加本届核安全峰会的丹麦首相拉斯穆森、韩国总统朴槿惠和阿根廷总统马克里，并出席了伊核问题六国机制领导人会议。')
-print(list(words))
-postags = ltpparser.postag(words)
-# print(words)
-print(list(postags))
+#百度纠错
+# text='	触摸砥砺奋进的脉博 ——西峰区经济社会发展精彩回眸'
+# json=client.ecnet(text);
+# print(json)
+
+
+from pyhanlp import *
+print(HanLP.segment(s))
+print(HanLP.parseDependency(s))
+print(HanLP.extractKeyword(s,20))
 '''
-['在', '华盛顿', '期间', '，', '习', '主席', '还', '先后', '会见', '了', '前来', '参加', '本届', '核', '安全', '峰会', '的', '丹麦', '首相', '拉斯穆森', '、', '韩国', '总统', '朴', '槿惠', '和', '阿根廷', '总统', '马克里', '，', '并', '出席', '了', '伊', '核', '问题', '六', '国', '机制', '领导人', '会议', '。']
-['p', 'ns', 'nd', 'wp', 'nh', 'n', 'd', 'd', 'v', 'u', 'v', 'v', 'r', 'n', 'a', 'n', 'u', 'ns', 'n', 'nh', 'wp', 'ns', 'n', 'nh', 'nh', 'c', 'ns', 'n', 'nh', 'wp', 'c', 'v', 'u', 'j', 'n', 'n', 'm', 'n', 'n', 'n', 'n', 'wp']
+拉斯穆森/nrf, 、/w, 韩国/nsf, 总统/nnt, 朴槿惠/nr, 和/cc, 阿根廷/nsf, 总统/nnt, 马克里/nrf, ，/w, 并/cc, 出席/v, 了/ule, 伊/b, 核/n, 问题/n, 六/m,
+国/n, 机制/n, 领导人/nnt, 会议/n, 。/w]
+1       在      在      p       p       _       9       状中结构        _       _
+2       华盛顿  华盛顿  nh      nrf     _       3       定中关系        _       _
+3       期间    期间    nd      f       _       1       介宾关系        _       _
+4       ，      ，      wp      w       _       1       标点符号        _       _
+5       习      习      nh      nr      _       6       定中关系        _       _
+6       主席    主席    n       n       _       9       主谓关系        _       _
+7       还      还      d       d       _       9       状中结构        _       _
+8       先后    先后    d       d       _       9       状中结构        _       _
+9       会见    会见    v       v       _       0       核心关系        _       _
+10      了      了      u       u       _       9       右附加关系      _       _
+11      前来    前来    v       v       _       19      定中关系        _       _
+12      参加    参加    v       v       _       11      并列关系        _       _
+13      本届    本届    r       r       _       15      定中关系        _       _
+14      核安全  核安全  n       n       _       15      定中关系        _       _
+15      峰会    峰会    n       n       _       12      动宾关系        _       _
+16      的      的      u       u       _       11      右附加关系      _       _
+17      丹麦    丹麦    ns      ns      _       18      定中关系        _       _
+18      首相    首相    n       n       _       19      定中关系        _       _
+19      拉斯穆森        拉斯穆森        nh      nrf     _       9       动宾关系        _       _
+20      、      、      wp      w       _       23      标点符号        _       _
+21      韩国    韩国    ns      ns      _       22      定中关系        _       _
+22      总统    总统    n       n       _       23      定中关系        _       _
+23      朴槿惠  朴槿惠  nh      nr      _       19      并列关系        _       _
+24      和      和      c       c       _       27      左附加关系      _       _
+25      阿根廷  阿根廷  ns      ns      _       26      定中关系        _       _
+26      总统    总统    n       n       _       27      定中关系        _       _
+27      马克里  马克里  nh      nrf     _       19      并列关系        _       _
+28      ，      ，      wp      w       _       9       标点符号        _       _
+29      并      并      c       c       _       30      状中结构        _       _
+30      出席    出席    v       v       _       9       并列关系        _       _
+31      了      了      u       u       _       30      右附加关系      _       _
+32      伊      伊      j       j       _       33      定中关系        _       _
+33      核      核      n       n       _       34      定中关系        _       _
+34      问题    问题    n       n       _       37      定中关系        _       _
+35      六      六      m       m       _       36      定中关系        _       _
+36      国      国      n       n       _       37      定中关系        _       _
+37      机制    机制    n       n       _       38      定中关系        _       _
+38      领导人  领导人  n       n       _       39      定中关系        _       _
+39      会议    会议    n       n       _       30      动宾关系        _       _
+40      。      。      wp      w       _       9       标点符号        _       _
+
+[总统, 问题, 会见, 核, 前来, 出席, 参加, 核安全, 峰会, 丹麦, 拉斯穆森, 首相, 国, 先后, 马克里, 阿根廷, 朴槿惠, 韩国, 机制, 习主席]
 '''
+# import stanfordnlp

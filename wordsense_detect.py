@@ -38,9 +38,9 @@ class MultiSenDetect(object):
         self.redis = None
         try:
             pool = redis.ConnectionPool(host='192.168.1.101', port=6379, db=1, decode_responses=True)
-            pool1 = redis.ConnectionPool(host='192.168.1.101', port=6379, db=2, decode_responses=True)
+            pool1 = redis.ConnectionPool(host='192.168.1.101', port=6379, db=2)
             self.redis = redis.Redis(connection_pool=pool)
-            self.redis_1=redis.Redis(connection_pool=pool1)
+            self.redis_1=redis.StrictRedis(connection_pool=pool1)
             logging.info('baidu cache in redis is connected ,count %d' % (self.redis.dbsize()))
             logging.info('word vector in redis is connected ,count %d' % (self.redis_1.dbsize()))
         except:
@@ -268,10 +268,11 @@ class MultiSenDetect(object):
     def get_wordvector(self, word):
         if self.redis_1:
             if self.redis_1.exists(word):
-                return np.array(self.redis_1.get(word))
+                return pickle.loads(self.redis_1.get(word))
             else:
                 vec = self.bc.encode([word])[0]
-                self.redis_1.set(word,str(vec))
+
+                self.redis_1.set(word, pickle.dumps(vec))
                 return vec
         if self.word_dict:
             if self.word_dict.get(word) is None:
@@ -503,7 +504,7 @@ def test():
     wd='杨旭'
 
     sent='中共十九届中央政治局常委，国务院总理、党组书记'
-    wd='习近平'
+    wd='李克强'
 
     sent_embedding_res, wds_embedding_res = handler.detect_main(sent, wd)
     print(sent_embedding_res)

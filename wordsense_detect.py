@@ -9,6 +9,7 @@ import pickle
 import pprint
 import re
 # from collections import defaultdict
+import time
 from urllib import request
 from lxml import etree
 from urllib import parse
@@ -19,6 +20,7 @@ import logging
 import redis
 # from gensim.models import word2vec
 from bert_serving.client import BertClient
+from numpy.linalg import linalg
 
 logging.basicConfig(level=logging.INFO)
 logging = logging.getLogger(__name__)
@@ -37,12 +39,18 @@ class MultiSenDetect(object):
         #以redis代替文件
         self.redis = None
         try:
+            #这是百科页面缓存
             pool = redis.ConnectionPool(host='192.168.1.101', port=6379, db=1, decode_responses=True)
+            #这是向量缓存
             pool1 = redis.ConnectionPool(host='192.168.1.101', port=6379, db=2)
+            #这是关键词缓存
+            pool2 = redis.ConnectionPool(host='192.168.1.101', port=6379, db=3)
             self.redis = redis.Redis(connection_pool=pool)
             self.redis_1=redis.StrictRedis(connection_pool=pool1)
+            self.redis_2 = redis.StrictRedis(connection_pool=pool2)
             logging.info('baidu cache in redis is connected ,count %d' % (self.redis.dbsize()))
             logging.info('word vector in redis is connected ,count %d' % (self.redis_1.dbsize()))
+            logging.info('keyword in redis is connected ,count %d' % (self.redis_2.dbsize()))
         except:
             #如果没有redis，用文件代替
             try:
@@ -120,6 +128,8 @@ class MultiSenDetect(object):
                 values = [value.xpath('string(.)').replace('\n', '') for value in li_result.xpath('./dd')]
                 for item in zip(attributes, values):
                     info_data[item[0].replace('    ', '')] = item[1].replace('    ', '')
+        # 补充元数据
+        info_data['desc'] = selector.xpath('//meta[@name="description"]/@content')
         paras=[]
         para_text=''
         pattern = re.compile('“(.*?)”')
@@ -129,16 +139,12 @@ class MultiSenDetect(object):
                 if para.text:
                     para_text=para_text+para.text
             paras=pattern.findall(para_text)
-            info_data['keywords']=self.extract_keywords(para_text)+paras# anse.extract_tags(para_text, topK=20, withWeight=False)
+            info_data['keywords']=self.extract_keywords(info_data['desc']+para_text)+paras# anse.extract_tags(para_text, topK=20, withWeight=False)
         else:
-            info_data['keywords'] =[]
+            info_data['keywords'] =self.extract_keywords(info_data['desc'])#[]
         #计算后面的地点、职位、最高词频等值
 
-        #补充元数据
-        info_data['desc']=selector.xpath('//meta[@name="description"]/@content')
         # info_data['keywords']=selector.xpath('//meta[@name="keywords"]/@content')
-
-
         return info_data
 
     '''多义词主函数'''
@@ -160,18 +166,24 @@ class MultiSenDetect(object):
             #
             # for concept, links in cluster_concept_dict.items():
             #     link = links[0]
-            concept=sen
-            selector = etree.HTML(self.get_html(link))
-            concept_data=self.extract_baidu(selector)
-            # desc, keywords = self.extract_desc(link,wd)
-            desc =concept_data['desc']
-            concept_data['link']=link
-            # keywords=' '.join(concept_data['keywords'])
-            context = ' '.join(desc + [' '] + concept_data['keywords'])
-            # context = concept_data['keywords']
-            concepts_dict[concept] = context
+            concept = sen
+            if self.redis_2:
+                if self.redis_2.exists(link):
+                    concept_data=pickle.loads(self.redis_2.get(link))
+                else:
 
-            self.kg_dict[concept] = concept_data
+                    selector = etree.HTML(self.get_html(link))
+                    concept_data=self.extract_baidu(selector)
+                    self.redis_2.set(link,pickle.dumps(concept_data))
+                    # desc, keywords = self.extract_desc(link,wd)
+                desc =concept_data['desc']
+                concept_data['link']=link
+                # keywords=' '.join(concept_data['keywords'])
+                # context = ' '.join(desc + [' '] + concept_data['keywords'])
+                context = concept_data['keywords']
+                concepts_dict[concept] = context
+                self.kg_dict[concept] = concept_data
+
         # pprint.pprint(concepts_dict)
         return concepts_dict
     def getConcept(self,concept):
@@ -262,6 +274,18 @@ class MultiSenDetect(object):
         #     else:
         #         continue
         # return embedding/sent_len
+    '''用BERT来取得关键词组的向量组'''
+    def get_wordsvectors(self,words):
+        if len(words)==0:return []
+        key=''.join(words)
+        if self.redis_1:
+            if self.redis_1.exists(key):
+                return pickle.loads(self.redis_1.get(key))
+            else:
+                vecs=self.bc.encode(words)
+                self.redis_1.set(key, pickle.dumps(vecs))
+                return vecs
+        return self.bc.encode(words)
 
     '''获取单个词的词向量'''
     '''改用BERT的字向量来代词向量'''
@@ -287,19 +311,38 @@ class MultiSenDetect(object):
         #     v=np.array([0]*self.embedding_size)
         # return v
         # return np.array(self.embdding_dict.get(word, [0]*self.embedding_size))
-
-    '''计算问句与库中问句的相似度,对候选结果加以二次筛选'''
+    '''两两向量之间相似度(余弦)'''
     def similarity_cosine(self, vector1, vector2):
-        cos1 = np.sum(vector1*vector2)
-        cos21 = np.sqrt(sum(vector1**2))
-        cos22 = np.sqrt(sum(vector2**2))
-        similarity = cos1/float(cos21*cos22)
+        cos1 = np.sum(vector1 * vector2)
+        cos21 = linalg.norm(vector1)
+        cos22 = linalg.norm(vector2)
+        # cos21 = np.sqrt(sum(vector1 ** 2))
+        # cos22 = np.sqrt(sum(vector2 ** 2))
+        similarity = cos1 / float(cos21 * cos22)
+        if str(similarity) == 'nan':
+            return 0.0
+        else:
+            return similarity
+    '''计算两组向量之间的相关度（余弦），代替两两向量之间相似度的多重计算，速度快'''
+    def similarity_cosine_matrix(self, vectors1, vectors2):
+        cos1 = np.tensordot(vectors1, vectors2, axes=(1, 1))
+        cos2 = np.tensordot(vectors2, vectors1, axes=(1, 1))
+        cos21 = linalg.norm(vectors1, axis=1)
+        # cos21 = np.sqrt(sum(vector1**2))
+        cos22 = linalg.norm(vectors2, axis=1)
+        # cos22 = np.sqrt(sum(vector2**2))
+        score_wds1= np.divide(cos1, (np.outer(cos21, cos22)))
+        score_wds2 = np.divide(cos2, (np.outer(cos22, cos21)))
+        similarity1 = np.average(np.max(score_wds1, axis=1), axis=0)
+        similarity2 = np.average(np.max(score_wds2, axis=1), axis=0)
+        similarity=max(similarity1,similarity2)
+
         if str(similarity) == 'nan':
             return 0.0
         else:
             return similarity
     #减少目标句的反复，直接用向量字典,sent1是知识数据，sent2是目标数据，vecs是目标数据的关键词向量
-    def distance_words_vecs(self, sent1, sent2,vecs, word='', concept=''):
+    def distance_words_vecs(self, sent1_keywords, sent2, vecs, word='', concept='',weightkeys=[]):
         # TODO:这里也可以进行分析，如果有定中的词，把定中拿出来与concept进行比较
         # 简化地：如果句子中包含concept可以直接得到结论
         concept_keys = []
@@ -321,9 +364,11 @@ class MultiSenDetect(object):
                 if maxlen / len(concept_sub) > 0.75:
                     concept_keys.append(concept_sub)#maxlen / len(concept_sub))
         # modi
-        sent1 = sent1.replace('...', '').replace(word, '')
-        if sent1.strip() == '': return 0
-        wds1 = self.extract_keywords(sent1 + ' ' + concept)
+        from scipy.spatial.distance import cosine
+        # sent1 = sent1.replace('...', '').replace(word, '')
+        # if sent1.strip() == '': return 0
+        # wds1 = self.extract_keywords(sent1 + ' ' + concept)
+        wds1 = sent1_keywords
         wds1 = wds1+concept_keys
         # wds2 = self.extract_keywords(sent2)
         # pprint.pprint(wds1)
@@ -331,25 +376,38 @@ class MultiSenDetect(object):
         score_wds1 = []
         score_wds2 = []
         sim_score = 0
+        # t = time.time()
+        sent1_vectors=self.get_wordsvectors(wds1)
+        weightkeys_vector=[]
+        for key in weightkeys:
+            i=wds1.index(key)
+            weightkeys_vector.append(sent1_vectors[i])
+        if len(weightkeys)>0:
+            sent1_vectors = sent1_vectors + weightkeys_vector
+            vecs = vecs + weightkeys_vector
         try:
-            for word1 in wds1:  # 这个模式下，在找两组词中最接近的两个词，所有的最接近值再取平均，反向再取，得到一个和第二句每个最大相似平均值。这个算法，不太好。
-                score = max(
-                    [self.similarity_cosine(self.get_wordvector(word1),vec) for vec in vecs.values()])
-                score_wds1.append(score)
-            for word2 in vecs:
-                score = max(
-                    [self.similarity_cosine(vecs.get(word2), self.get_wordvector(word1)) for word1 in wds1])
-                score_wds2.append(score)
+            #替换算法
+            sim_score=self.similarity_cosine_matrix(sent1_vectors,vecs)
+
+            # for word1 in wds1:  # 这个模式下，在找两组词中最接近的两个词，所有的最接近值再取平均，反向再取，得到一个和第二句每个最大相似平均值。这个算法，不太好。
+            #     score = max(
+            #         [self.similarity_cosine(self.get_wordvector(word1),vec) for vec in vecs.values()])
+            #     score_wds1.append(score)
+            # for word2 in vecs:
+            #     score = max(
+            #         [self.similarity_cosine(vecs.get(word2), self.get_wordvector(word1)) for word1 in wds1])
+            #     score_wds2.append(score)
             #这里用的是sum/len，其实还是要平滑一下，如果有max的则应该加权
             #对于keyword太少的情况，可能效果会比较差
             # 相当于定中高于向量关系，特殊情况会出现都相等的情况，再处理
-            score_wds1=score_wds1+[s for s in score_wds1 if s>=1]
-            score_wds2 = score_wds2 + [s for s in score_wds2 if s >= 1]
-            sim_score = max(sum(score_wds1) / len(wds1), sum(score_wds2) / len(vecs))
+            # score_wds1=score_wds1+[s for s in score_wds1 if s>=1]
+            # score_wds2 = score_wds2 + [s for s in score_wds2 if s >= 1]
+            # sim_score = max(sum(score_wds1) / len(wds1), sum(score_wds2) / len(vecs))
         except:
             sim_score = 0
 
-
+        # logging.info(concept + 'distance_words cost:' + str(time.time() - t))
+        # t = time.time()
 
         # if len(scores)>0:
         #     sim_score=len(scores)
@@ -430,20 +488,24 @@ class MultiSenDetect(object):
         concept_scores_wds = {}
 
         keys = self.extract_keywords(sent)
-        keysdict=dict()
-        for key in keys:
-            vec=self.get_wordvector(key)
-            keysdict[key]=vec
-        for att_ in att:
-            if att_!='':
-                vec = self.get_wordvector(att_)
-                keysdict[att_] = vec
-        for geo_ in geo:
-            if geo_!='':
-                vec = self.get_wordvector(geo_)
-                keysdict[geo_] = vec
 
-        for concept, desc in concept_dict.items():
+        # keysdict=dict()
+        # for key in keys:
+        #     vec=self.get_wordvector(key)
+        #     keysdict[key]=vec
+
+        # for att_ in att:
+        #     if att_!='':
+        #         vec = self.get_wordvector(att_)
+        #         keysdict[att_] = vec
+        # for geo_ in geo:
+        #     if geo_!='':
+        #         vec = self.get_wordvector(geo_)
+        #         keysdict[geo_] = vec
+        keys = keys + att + list(geo)
+        keys_vectors = self.get_wordsvectors(keys)
+
+        for concept, keywords in concept_dict.items():
             if len(concept_dict) == 1:
                 concept_scores_sent[concept]=1
                 concept_scores_wds[concept]=1
@@ -457,7 +519,10 @@ class MultiSenDetect(object):
             concept_scores_sent[concept]=0
             #词向量模式下，效果还可以
             # similarity_wds = self.distance_words(desc, sent, word, concept)
-            similarity_wds = self.distance_words_vecs(desc, sent,keysdict, word, concept)
+            #把相同项加权做到这里了，可能反而会降速
+            # keywords=keywords+list(set(keywords).intersection(set(keys)))
+            similarity_wds = self.distance_words_vecs(keywords, sent, keys_vectors, word, concept,list(set(keywords).intersection(set(keys))))
+
             concept_scores_wds[concept] = similarity_wds
 
         concept_scores_sent = sorted(concept_scores_sent.items(), key=lambda asd:asd[1],reverse=True)
@@ -524,7 +589,27 @@ def mergeBaiduCache():
     out = open('./mod/baidu_cache.bin', 'wb')
     out.write(pickle.dumps(baidu_cache))
     out.close()
+
+def vectors_max_cosin_test():
+    m = MultiSenDetect()
+    w1 = ['中共', '党委', '书记']
+    w2 = ['中共', '特别', '娱乐']
+    m1 = m.bc.encode(['中共', '党委', '书记'])
+    m2 = m.bc.encode(['中共', '特别', '娱乐'])
+    m3 = m.bc.encode(['娱乐', '明星', '电视'])
+    print(m.similarity_cosine_matrix(m1, m2))
+    # print(m.similarity_cosine_matrix(m2, m1))
+    print(m.similarity_cosine_matrix(m1, m3))
+
+    score_wds1 = []
+    score_wds2 = []
+    for word1 in w1:  # 这个模式下，在找两组词中最接近的两个词，所有的最接近值再取平均，反向再取，得到一个和第二句每个最大相似平均值。这个算法，不太好。
+        score = max([m.similarity_cosine(m.get_wordvector(word1), m.get_wordvector(word2)) for word2 in w2])
+        score_wds1.append(score)
+    print(sum(score_wds1) / len(m1))
+
 if __name__ == '__main__':
     # test()
     # mergeBaiduCache()
     test()
+    # vectors_max_cosin_test()

@@ -51,6 +51,9 @@ class MultiSenDetect(object):
             logging.info('baidu cache in redis is connected ,count %d' % (self.redis.dbsize()))
             logging.info('word vector in redis is connected ,count %d' % (self.redis_1.dbsize()))
             logging.info('keyword in redis is connected ,count %d' % (self.redis_2.dbsize()))
+            load_file = open('./mod/place_dict.bin', 'rb')
+            self.place_dict = pickle.load(load_file)
+            logging.info('place_dict count %d' % (len(self.aho_policical_person)))
         except:
             #如果没有redis，用文件代替
             try:
@@ -129,7 +132,10 @@ class MultiSenDetect(object):
                 for item in zip(attributes, values):
                     info_data[item[0].replace('    ', '')] = item[1].replace('    ', '')
         # 补充元数据
-        info_data['desc'] = selector.xpath('//meta[@name="description"]/@content')
+        try:
+            info_data['desc'] = selector.xpath('//meta[@name="description"]/@content')[0]
+        except:
+            info_data['desc'] =[]
         paras=[]
         para_text=''
         pattern = re.compile('“(.*?)”')
@@ -278,13 +284,30 @@ class MultiSenDetect(object):
     def get_wordsvectors(self,words):
         if len(words)==0:return []
         key=''.join(words)
+        #试试用mget来处理，取的时候优化，一起发送
         if self.redis_1:
-            if self.redis_1.exists(key):
-                return pickle.loads(self.redis_1.get(key))
-            else:
-                vecs=self.bc.encode(words)
-                self.redis_1.set(key, pickle.dumps(vecs))
-                return vecs
+            word_v_dumps = self.redis_1.mget(words)
+            encodes=[]
+            needencodes_word=[]
+            needencodes_index=[]
+            for i,dump in enumerate(word_v_dumps):
+                if dump is None:
+                    needencodes_index.append(i)
+                    needencodes_word.append(words[i])
+                else:
+                    encodes.insert(i,pickle.loads(dump))
+            if len(needencodes_word)>0:
+                vecs=self.bc.encode(needencodes_word)
+                for vec in zip(needencodes_index,vecs,needencodes_word):
+                    self.redis_1.set(vec[2], pickle.dumps(vec[1]))
+                    encodes.insert(vec[0],vec[1])
+            return encodes
+            # if self.redis_1.exists(key):
+            #     return pickle.loads(self.redis_1.get(key))
+            # else:
+            #     vecs=self.bc.encode(words)
+            #     self.redis_1.set(key, pickle.dumps(vecs))
+            #     return vecs
         return self.bc.encode(words)
 
     '''获取单个词的词向量'''
@@ -327,29 +350,31 @@ class MultiSenDetect(object):
     def similarity_cosine_matrix(self, vectors1, vectors2):
         cos1 = np.tensordot(vectors1, vectors2, axes=(1, 1))
         cos2 = np.tensordot(vectors2, vectors1, axes=(1, 1))
+        # 2 - 范数：║x║2 =（│x1│2 +│x2│2 +…+│xn│2）1 / 2
         cos21 = linalg.norm(vectors1, axis=1)
         # cos21 = np.sqrt(sum(vector1**2))
         cos22 = linalg.norm(vectors2, axis=1)
         # cos22 = np.sqrt(sum(vector2**2))
         score_wds1= np.divide(cos1, (np.outer(cos21, cos22)))
         score_wds2 = np.divide(cos2, (np.outer(cos22, cos21)))
+        #加权平均
         similarity1 = np.average(np.max(score_wds1, axis=1), axis=0)
         similarity2 = np.average(np.max(score_wds2, axis=1), axis=0)
-        similarity=max(similarity1,similarity2)
+        similarity=(similarity1+similarity2)/2
 
         if str(similarity) == 'nan':
             return 0.0
         else:
             return similarity
     #减少目标句的反复，直接用向量字典,sent1是知识数据，sent2是目标数据，vecs是目标数据的关键词向量
-    def distance_words_vecs(self, sent1_keywords, sent2, vecs, word='', concept='',weightkeys=[]):
+    def distance_words_vecs(self, sent1_keywords, sent2, vecs, word='', concept='',weightkeys=[],att=[],geo=[]):
         # TODO:这里也可以进行分析，如果有定中的词，把定中拿出来与concept进行比较
         # 简化地：如果句子中包含concept可以直接得到结论
         concept_keys = []
         if concept != '':
             concept_data=self.kg_dict.get(concept)
             #地理加权，简化版，对国际人物效果高，国内人物未处理
-            if concept_data.get('国籍'):
+            if concept_data.get('国籍') and len(geo)>0:
                 concept_keys.append(concept_data.get('国籍'))
             #标签加权
             # if concept_data.get('tags'):
@@ -361,15 +386,36 @@ class MultiSenDetect(object):
                 # score=self.similarity_cosine(self.get_wordvector(concept_sub), self.get_wordvector(word2))
                 sm = difflib.SequenceMatcher(None, concept_sub, sent2)
                 maxlen = sm.find_longest_match(0, len(concept_sub), 0, len(sent2)).size
+                # if maxlen/ len(concept_sub) ==1:
+                #     #完全一致
+                #     return 1
                 if maxlen / len(concept_sub) > 0.75:
                     concept_keys.append(concept_sub)#maxlen / len(concept_sub))
+                    concept_keys.append(concept_sub)
+                    concept_keys.append(concept_sub)
+
+                if len(att)>0:
+                    for att_ in att:
+                        sm_ = difflib.SequenceMatcher(None, concept_sub, att_)
+                        blocks= sm_.get_matching_blocks()
+                        maxlen_=sum([b.size for b in blocks])
+                                # maxlen_   (0, len(concept_sub), 0, len(att_)).size
+                        if maxlen_/len(concept_sub)==1:
+                            return 1
+                        if maxlen / len(concept_sub) > 0.75 or maxlen / len(att_)==1:
+                            concept_keys.append(att_)
+                            concept_keys.append(att_)
+                            concept_keys.append(att_)
+
+                    concept_keys.append(concept_sub)
         # modi
         from scipy.spatial.distance import cosine
         # sent1 = sent1.replace('...', '').replace(word, '')
         # if sent1.strip() == '': return 0
         # wds1 = self.extract_keywords(sent1 + ' ' + concept)
+        #这里能否实现：如果输入句有title，这里要加权title，如果有地名，要加权地名
         wds1 = sent1_keywords
-        wds1 = wds1+concept_keys
+        wds1 = wds1+concept_keys+concept_keys
         # wds2 = self.extract_keywords(sent2)
         # pprint.pprint(wds1)
         # pprint.pprint(wds2)
@@ -378,13 +424,17 @@ class MultiSenDetect(object):
         sim_score = 0
         # t = time.time()
         sent1_vectors=self.get_wordsvectors(wds1)
+        #补充的权重
         weightkeys_vector=[]
         for key in weightkeys:
-            i=wds1.index(key)
-            weightkeys_vector.append(sent1_vectors[i])
-        if len(weightkeys)>0:
-            sent1_vectors = sent1_vectors + weightkeys_vector
-            vecs = vecs + weightkeys_vector
+            if key in wds1:
+                i=wds1.index(key)
+                weightkeys_vector.append(sent1_vectors[i])
+        if len(weightkeys_vector)>0:
+            sent1_vectors = np.append(sent1_vectors ,weightkeys_vector,axis=0)
+            vecs =  np.append(vecs , weightkeys_vector,axis=0)
+        #如果百科句的关键词过少，会导致比例提高，如果能一致呢？
+        # logging.info('%s vecs length:%d,sentv length:%d' % (concept,len(vecs),len(sent1_vectors)))
         try:
             #替换算法
             sim_score=self.similarity_cosine_matrix(sent1_vectors,vecs)
@@ -481,6 +531,8 @@ class MultiSenDetect(object):
         pprint.pprint(word)
         pprint.pprint(att)
         pprint.pprint(geo)
+        if att==[''] :
+            att=[]
         sent = sent.replace(word, '')
         concept_dict = self.collect_concepts(word)
         # sent_vector = self.rep_sentencevector(sent)#这个句向量的得法太武断了，并不利于聚类
@@ -502,7 +554,17 @@ class MultiSenDetect(object):
         #     if geo_!='':
         #         vec = self.get_wordvector(geo_)
         #         keysdict[geo_] = vec
-        keys = keys + att + list(geo)
+        # w=[]
+        # if len(att) > 0:
+        #     w=w+att
+        # if len(geo) >0:
+        #    w=w+list(geo)
+        # if len(w)>0:
+        #     keys=w
+        keys = keys + att + list(geo)+ att + list(geo)
+        pprint.pprint(keys)
+        while '' in keys:
+            keys.remove('')
         keys_vectors = self.get_wordsvectors(keys)
 
         for concept, keywords in concept_dict.items():
@@ -521,7 +583,16 @@ class MultiSenDetect(object):
             # similarity_wds = self.distance_words(desc, sent, word, concept)
             #把相同项加权做到这里了，可能反而会降速
             # keywords=keywords+list(set(keywords).intersection(set(keys)))
-            similarity_wds = self.distance_words_vecs(keywords, sent, keys_vectors, word, concept,list(set(keywords).intersection(set(keys))))
+            #ATT分析
+            geo_=[]
+            for att_ in att:
+                desc_seg = [[i.word, i.flag] for i in pseg.cut(att_)]
+                concepts_candi = [i[0] for i in desc_seg if i[1][0] in ['ns']]
+                if len(concepts_candi)>0:
+                    geo_=geo_+concepts_candi
+            if len(geo_)>0:
+                geo=geo_
+            similarity_wds = self.distance_words_vecs(keywords, sent, keys_vectors, word, concept,list(set(keywords).intersection(set(keys))),att,geo)
 
             concept_scores_wds[concept] = similarity_wds
 
@@ -568,7 +639,7 @@ def test():
     #[('中国足球运动员', 0.5913730414196107), ('南阳师范学院老师', 0.5880194427854896), ('原辽宁省国土资源厅巡视员', 0.5839426325332834)]
     wd='杨旭'
 
-    sent='中共十九届中央政治局常委，国务院总理、党组书记'
+    sent='中共十九届中央政治局常委，国务院总理、党组书记李克强发表讲话'
     wd='李克强'
 
     sent_embedding_res, wds_embedding_res = handler.detect_main(sent, wd)
@@ -609,7 +680,9 @@ def vectors_max_cosin_test():
     print(sum(score_wds1) / len(m1))
 
 if __name__ == '__main__':
-    # test()
-    # mergeBaiduCache()
     test()
+    # mergeBaiduCache()
+    # test()
     # vectors_max_cosin_test()
+    # m = MultiSenDetect()
+    # print(m.get_wordsvectors(['首领','大家']))

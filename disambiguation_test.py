@@ -235,7 +235,7 @@ class PersonDisambiguation():
         political_person_dict = pickle.load(load_file)
         for i, person in enumerate(political_person_dict):
             if person['cname']==cname and person['duty']==duty:
-                sent_embedding_res, wds_embedding_res = self.detector.detect_main(person['duty'], person['cname'],person['duty'])
+                sent_embedding_res, wds_embedding_res = self.detector.detect_main(person['duty'], person['cname'],[person['duty']])
                 # print(sent_embedding_res)
                 # print(wds_embedding_res)
                 person['baikename'] = wds_embedding_res[0][0]
@@ -341,23 +341,53 @@ class PersonDisambiguation():
                 # geo=self.geoKG.parseDoc_global(sent)
                 geo=geos
             # sent_embedding_res暂时无用，顺接原来的接口，
+            # 能不能在这里加一个类别的判断呢，通过title判断是否是官员，再对官员进行过滤？
+            # ATT与全句相比，更加贴近人物本身，其它关键词是背景
+            # 应该先进行类似知识图谱级的判断，再进行消歧综合判断
             sent_embedding_res, wds_embedding_res = self.detector.detect_main(sent, ppersons[0].get('cname'), att, geo)
             concept=self.detector.getConcept(wds_embedding_res[0][0])#拿回元数据
             for pperson in ppersons:
                 #政治人物 是百度给人物打的标签，这里为加强准确性，判断是否符合标签
-                if concept.get('出生日期')==pperson.get('baikeconcept').get('出生日期') and '政治人物' in concept.get('tags'):
-                    logging.info(pperson)
+                if concept.get('出生日期')==pperson.get('baikeconcept').get('出生日期'):# and '政治人物' in concept.get('tags'):
+                    # logging.info(pperson)
                     # pprint.pprint(pperson)
                     pperson_sure.append(pperson)
                     break
-            if len(pperson_sure)==0:
+            if pperson not in pperson_sure:
                     concept['是否政要']='否'
-                    pprint.pprint(concept)
+                    # pprint.pprint(concept)
                     npperson_sure.append(concept)
         #保存baidu的访问缓存
         self.detector.save_cache()
+        pprint.pprint(pperson_sure)
+        pprint.pprint(npperson_sure)
         return pperson_sure,npperson_sure
+    def recongnizePerson(self,sent,repeat=False,att_weight=True,geo_weight=True):
+        pperon_candidates = []
 
+        # 一句话中也可能有多个政要人名，多个重名怎么办，这种模式下会对有重复字的名字进行抽取
+        # 如果有两个字的政要，恰好有三个字的其它人员，则会出现误判，所以最合理的
+        # 方式仍然是利用分词和句法分析来定中分析。
+        # 要先进行词法分析才行，这里用了LTP的server来做的，jieba的不准确，需要启动ltp_server
+        nrs, geos = self.findPerson(sent)
+        # for word in self.aho_policical_person.iter(sent):
+        for nr in set(nrs):
+            att = []
+            if att_weight:
+                att = nrs.get(nr)
+            # 地理位置加权
+            geo = []
+            if geo_weight:
+                # geo=self.geoKG.parseDoc_global(sent)
+                geo = geos
+            # sent_embedding_res暂时无用，顺接原来的接口，
+            # 能不能在这里加一个类别的判断呢，通过title判断是否是官员，再对官员进行过滤？
+            # ATT与全句相比，更加贴近人物本身，其它关键词是背景
+            # 应该先进行类似知识图谱级的判断，再进行消歧综合判断
+            sent_embedding_res, wds_embedding_res = self.detector.detect_main(sent, nr, att, geo)
+            concept = self.detector.getConcept(wds_embedding_res[0][0])  # 拿回元数据
+            pperon_candidates.append(concept)
+        pprint.pprint(pperon_candidates)
 
 if __name__ == '__main__':
     pd=PersonDisambiguation()
@@ -366,16 +396,20 @@ if __name__ == '__main__':
     # pd.checkPersonBaike()
     # pd.test1()
     sent='8月11日，区委书记刘惠接待中铁十六局集团有限公司程红彬一行到我区考察交流。双方召开座谈会，与会人员观看了中铁十六局集团和津南区宣传片，随后双方围绕高标准推进区域规划开发、高质量推进项目建设、高水平推进政企合作等方面进行深入交流。'
-    # sent='8月9日上午，省纪委监委召开“不忘初心、牢记使命”主题教育先进事迹报告会。省委常委、省纪委书记、省监委主任刘惠出席，省委第一巡回指导组到会指导。'
-    # sent='刘惠 ，男，我国著名相声演员，师承相声表演艺术家姜昆老师。刘惠于2005年涉足影视，在电视剧《家家有本难念的经》里，他扮演了一个有七八集戏份的角色。'
+    sent='8月9日上午，省纪委监委召开“不忘初心、牢记使命”主题教育先进事迹报告会。省委常委、省纪委书记、省监委主任刘惠出席，省委第一巡回指导组到会指导。'
+    sent='刘惠 ，男，我国著名相声演员，师承相声表演艺术家姜昆老师。刘惠于2005年涉足影视，在电视剧《家家有本难念的经》里，他扮演了一个有七八集戏份的角色。'
     # sent='市委书记李强上午来到上海展览中心参观上海书展，与市民群众一起感受浓厚书香氛围。李强指出，要坚持以习近平新时代中国特色社会主义思想为指导，围绕举旗帜、聚民心、育新人、兴文化、展形象的使命任务，充分发挥上海书展促进全民阅读、增强文化底蕴的重要作用，不断提升吸引力、影响力，推动多出好书、多出精品，营造更加浓厚的书香社会氛围，为打响“上海文化”品牌、加快建设国际文化大都市作出更大贡献。'
     # sent='中国环境报记者张铭贤 通讯员郭运洲石家庄报道 河北省石家庄市日前召开生态环境保护委员会暨大气污染防治工作领导小组会议。河北省委常委、石家庄市委书记邢国辉主持会议并讲话。'
     # sent='6月12日晚，湖南省政府办公厅(研究室、政务局)召开“不忘初心、牢记使命”主题教育工作会议，省政府党组成员、秘书长，办公厅党组书记王群出席并作动员讲话。'
     # sent='美国总统特朗普在周日宣称，他将会向台湾销售f-16v战斗机，这一笔军售数量很大，请问中方对此有何评论'
     # sent='印度国防部长辛格当天提到了“核武器”,这位莫迪的爱将说,“印度遵守‘不首先使用核武器’的政策'
-    # sent='交部发言人耿爽宣布:应哥伦比亚政府邀请,国家主席习近平特使、交通运输部部长李小鹏将赴波哥大出席活动'
+    sent='交部发言人耿爽宣布:应哥伦比亚政府邀请,国家主席习近平特使、交通运输部部长李小鹏将赴波哥大出席活动'
     # sent='克维里卡什维利'
     # sent='最高检党组书记、检察长张军强调,检察机关领导干部要以上率下,加强党的政治建设,落实管党治党责任,确保主题教育见实效、收长效。'
+    # sent='国务院新闻办公室举行省（区、市）系列新闻发布会。2019年9月16日（星期一）下午2时30分，请中共海南省委书记、海南省人大常委会主任刘赐贵，中共海南省委副书记、海南省人民政府省长沈晓明，海南省人民政府副省长沈丹阳围绕“全面深化改革开放 加快建设美好新海南”介绍有关情况，并答记者问。'
+    # sent='美国总统特朗普15日晚在社交媒体上表示，美方已经确认了幕后黑手。伊朗最高领袖哈梅内伊17日重申，伊朗不会与美国总统特朗普举行任何级别的对话。此后，特朗普再次表示，他已要求美国财政部加大对伊朗制裁。'
+    # sent='11月12日至16日,全国人大常委会副委员长、中华全国总工会主席王东明率领调研组来闽,分别就“十三五”规划纲要实施情况中期评估和工会工作开展专题调研。'
     pprint.pprint(sent)
-    # pd.update_political_person_dict('唐纳德·特朗普','总统')
-    pd.recongnizePoliticalPerson(sent)
+    # pd.update_political_person_dict('沈丹阳','海南省副省长')
+    # pd.recongnizePoliticalPerson(sent)
+    pd.recongnizePerson(sent)

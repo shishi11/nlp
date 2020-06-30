@@ -180,7 +180,8 @@ def DuplicateContent_filtering_hashcode(matrix):
     return NoDuplicate_List, clean_Duplicate_List(Duplicate_List)
 
 if __name__ == '__main__':
-    code=ToSimhashcode('我是一个好人咧')
+    s = '在华盛顿期间，习主席还先后会见了前来参加本届核安全峰会的丹麦首相拉斯穆森、韩国总统朴槿惠和阿根廷总统马克里，并出席了伊核问题六国机制领导人会议。'
+    code=ToSimhashcode(s)
     print(code)
     code = ToSimhashcode('我是一个好人')
     print(code)

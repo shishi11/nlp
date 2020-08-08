@@ -4,6 +4,8 @@
 现在只用了正则抽取，后面还想用深度学习进行细分类
 未来从终本案件信息中筛选大额项目，进行申请执行人和被执行人的关联，找到原来是被告
 但现在作为原告执行回一部分钱，这样就可以找到第一个案子的申请执行人，恢复执行。
+临时附带收集，出现金额的情况、公司信息、个人信息
+
 '''
 import pprint
 import re
@@ -62,7 +64,7 @@ class Wenshu():
              'extrctor': 'regular'}])
         m=r'((?:[一二三四五六七八九十千万亿兆幺零百壹贰叁肆伍陆柒捌玖拾佰仟]+(?:点[一二三四五六七八九幺零]+){0,1})|\d+(?:[\.,，]\d+)*万?)元'
         # ' ((?:[一二三四五六七八九十千万亿兆幺零百]+(?:点[一二三四五六七八九幺零]+){0,1})|\d+(?:[\.,，]\d+)+万?)元'
-        m1=r'(?:支付|给付|清偿|偿还|^(?:(?!未).)*执行到位).*?'+m
+        m1=r'(?:支付|给付|清偿|偿还|退赔).*?'+m
         #清偿 偿还  执行到位
         #标的还剩，XXX未执行到位 未执行到位
         #
@@ -74,15 +76,50 @@ class Wenshu():
         self.aho_policical_person.add_word('清偿', shean)
         self.aho_policical_person.add_word('偿还', shean)
         self.aho_policical_person.add_word('退赔', shean)
-        self.aho_policical_person.add_word('执行到位', [{'key': '标的', 'field': 8, 'ekey': 'judger','word':'执行到位',
-          'rel': '执行到位.*?'+m,
-          'extrctor': 'regular'}])
+
         self.aho_policical_person.add_word('执行标的', [{'key': '标的', 'field': 8, 'ekey': 'judger','word':'执行标的',
           'rel': '执行标的.*?'+m,
           'extrctor': 'regular'}])
         self.aho_policical_person.add_word('执行总标的', [{'key': '标的', 'field': 8, 'ekey': 'judger','word':'执行总标的',
                                                      'rel': '执行总标的.*?' + m,
                                                      'extrctor': 'regular'}])
+
+        self.aho_policical_person.add_word('执行到位', [{'key': '执行到位', 'field': 9, 'ekey': 'judger', 'word': '执行到位',
+                                                     'rel': '^(?:(?!未).)*执行到位.*?' + m,
+                                                     'extrctor': 'regular'}])
+        self.aho_policical_person.add_word('扣划', [{'key': '执行到位', 'field': 9, 'ekey': 'judger', 'word': '扣划',
+                                                     'rel': '扣划.*?' + m,
+                                                     'extrctor': 'regular'}])
+
+        self.aho_policical_person.add_word('未执行到位', [{'key': '未执行到位', 'field': 9, 'ekey': 'judger', 'word': '未执行到位',
+                                                     'rel': '未执行到位.*?' + m,
+                                                     'extrctor': 'regular'}])
+
+        self.aho_policical_person.add_word('终结', [{'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '终结','value':'终结本案',
+                                                      'rel': '(终结(.*)本次执行程序|本次执行程序终结)',
+                                                      'extrctor': 'regular'}])
+        self.aho_policical_person.add_word('中止', [
+            {'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '中止', 'value': '中止执行',
+             'rel': '(中止(.*)执行程序|执行程序中止)',
+             'extrctor': 'regular'}])
+        self.aho_policical_person.add_word('审查', [
+            {'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '审查程序', 'value': '终结审查',
+             'rel': '(终结(.*)审查程序|审查程序终结|审查终结)',
+             'extrctor': 'regular'}])
+        self.aho_policical_person.add_word('刑事判决', [
+            {'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '刑事判决', 'value': '刑事',
+             'rel': '(刑事(判决|审判))',
+             'extrctor': 'regular'}])
+
+        self.aho_policical_person.add_word('撤销', [
+            {'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '撤销', 'value': '撤销',
+             'rel': '(撤销.*?(冻结|查封))',
+             'extrctor': 'regular'}])
+        # 驳回
+        self.aho_policical_person.add_word('驳回', [
+            {'key': '结果类型', 'field': 14, 'ekey': 'result_tag', 'word': '驳回', 'value': '驳回',
+             'rel': '(驳回.*?(请求|申请|异议))',
+             'extrctor': 'regular'}])
         # self.aho_policical_person.add_word('')
 
         #数据结构：
@@ -122,14 +159,15 @@ class Wenshu():
 
 
 
-    def getSents(self,html):
+    def getSents(self,html,userPd=True):
         str=re.sub('</?\w+[^>]*>', '', html).strip()
         # str=self.textProcess.delSpace(str)
         sents=[re.sub('\s','',sentence) for sentence in re.split(r'[？?！!。;；\n\r]', str) if sentence]
         # sents = [sentence for sentence in self.cut_sent(str) if sentence]
         #已经分好句了
         # sents=[re.sub('\s','',sentence) for sentence in sents]
-        parseDependency=[HanLP.parseDependency(sent) for sent in sents]
+
+        parseDependency=[HanLP.parseDependency(sent) for sent in sents] if userPd else []
 
         return sents,parseDependency
 
@@ -171,8 +209,8 @@ class Wenshu():
         return str
 
     #获取案件信息
-    def getCaseInfo(self,sents,pd):
-        reslut_flag=False
+    def getCaseInfo(self,sents,pd,info):
+
         caseinfo = collections.defaultdict(list)
         for i,sent in enumerate(sents):
             #这是先用多模匹配，再用句法依存。
@@ -194,16 +232,19 @@ class Wenshu():
                                 caseinfo[r['key']].append(str)
                             break
                     if  r['extrctor'] == 'regular':
-                        maohao=re.search(r['rel'],sent[word[0]-len(r['word'])+1:],re.I | re.DOTALL)
+                        maohao=re.search(r['rel'],sent,re.I | re.DOTALL)
+                        # print(sent,maohao)
                         if maohao!=None:
                             value=maohao.group(1)
                             #这里要把金额统一
-                            if r['field'] in [8]:
+                            if r['field'] in [8,9]:
 
                                 money=re.sub('[,，]','',value)
+                                #这里可能会报错，要小心
                                 money_std=c2d.takeNumberFromString(money)['digitsStringList'][0]
                                 value= money_std
-
+                            if r['field'] in [14]:
+                                value=r['value']
                             caseinfo[r['key']].append(value)
                             if r['field'] in [6, 7] :#元数据，暂不考虑重复因素
                                 metadata=sent[sent.find(maohao.group(1))+len(maohao.group(1))+1:]
@@ -219,10 +260,18 @@ class Wenshu():
 
             if sent.find('裁定如下：')>-1:
                 reslut_flag=True
-            if reslut_flag and re.match(r'(?!未)终结(.*)本次执行程序|本次执行程序终结',sent)!=None:
-                print(sent)
-                caseinfo['是否终结本次']=1
-            m = '((?:[一二三四五六七八九十千万亿兆幺零百]+(?:点[一二三四五六七八九幺零]+){0, 1})|\d+(?:[\.|,]\d+)*万?)元'
+            # if reslut_flag and re.match(r'(?!未)终结(.*)本次执行程序|本次执行程序终结',sent)!=None:
+            #     print(sent)
+            # caseinfo['结果类型']='终结本案'
+            #关联案件 京0102执恢223号  （2018）京0105民初92991号
+            m=re.search('[\(（]\d{4}[\)）]\D{1}\d{2,4}\D{1,2}\d{2,5}号',sent)
+            if m!=None :
+                m=m.group()
+                m=re.sub('（','(',m)
+                m = re.sub('）', ')', m)
+                if m!=info['case_code'] :
+                    caseinfo['关联案号'].append(m)
+            m = r'((?:[一二三四五六七八九十千万亿兆幺零百壹贰叁肆伍陆柒捌玖拾佰仟]+(?:点[一二三四五六七八九幺零]+){0,1})|\d+(?:[\.,，]\d+)*万?)元'
             if re.search(m,sent)!=None:
                 self.moneysent.append(sent)
             # print(self.duckling.parse_money(sent))
@@ -333,27 +382,34 @@ class Wenshu():
         #补充其它字段
         claimants=[]
         respondents=[]
-        terminates=[]
+        results=[]
         judges=[]
         execMoneys=[]
+        exeds=[]
+        relateCases=[]
         for i in range(len(self.casepd)):
             html=self.casepd.loc[i]['case_content']
-            sents, parseDependency=self.getSents(html)
-            caseinfo = self.getCaseInfo(sents, parseDependency)
+            sents, parseDependency=self.getSents(html,False)
+            caseinfo = self.getCaseInfo(sents, parseDependency,dict(self.casepd.loc[i]))
             print(i)
             # pprint.pprint(caseinfo)
             # pprint.pprint(self.casepd.loc[i])
             claimants.append(','.join(caseinfo.get('申请执行人',[])))
             respondents.append(','.join(caseinfo.get('被执行人',[])))
-            terminates.append(caseinfo.get('是否终结本次',0))
+            results.append(','.join( sorted(set(caseinfo.get('结果类型',[])))))
             judges.append(','.join(caseinfo.get('审判员', [])))
             maxmoney=caseinfo.get('标的', [0])
             execMoneys.append(max([float(n) for n in maxmoney]))
+            exed = caseinfo.get('执行到位', [0])
+            exeds.append(sum([float(n) for n in exed]))
+            relateCases.append(','.join( sorted(set(caseinfo.get('关联案号',[])))))
         self.casepd['claimant']=claimants
         self.casepd['respondent'] = respondents
-        self.casepd['terminate'] = terminates
+        self.casepd['result'] = results
         self.casepd['judge'] = judges
         self.casepd['money'] = execMoneys
+        self.casepd['exed'] = exeds
+        self.casepd['relateCases'] = relateCases
 
         self.casepd.to_csv('./resources/case_exe_list.csv')
         self.meta_company.to_csv('./resources/company_list.csv')
@@ -394,5 +450,5 @@ if __name__=='__main__':
 
     wenshu.executeCases()
     pandas.read_csv('./resources/case_exe_list.csv',index_col=0).to_excel('./resources/case.xlsx')
-    # pandas.DataFrame(wenshu.moneysent).to_csv('./resources/moneysent.csv')
+    pandas.DataFrame(wenshu.moneysent).to_csv('./resources/moneysent.csv')
     print(len(wenshu.casepd))

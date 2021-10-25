@@ -16,9 +16,13 @@ import numpy as np
 from bert_serving.client import BertClient
 from gensim import models
 from pyhanlp import *
-
+from sklearn import preprocessing
+from sklearn.cluster import DBSCAN
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.decomposition import PCA
+from sklearn.metrics import pairwise
+
+from global_geo_test import GeoKG
 
 logging.basicConfig(level=logging.INFO)
 logging = logging.getLogger(__name__)
@@ -42,6 +46,7 @@ class ClusterAnalyzer():
         BERT_PCA = 'Bert_PCA'
         LDA="LDA"
         FAMILIA_LDA_NEWS='Familia_lda_news'
+        COUNTPLACEVECTORIZER='Count_Place_Vectorizer'
 
     def __init__(self, model=MODELS.COUNTVECTORIZER, model_path='./mod/fasttext'):
         self.document_ = []
@@ -56,8 +61,10 @@ class ClusterAnalyzer():
 
         # 原始分行数据，空格分词，BERT则是整句
         self.corpus = []
-        # 原始分行数据分词
+        # 原始分行分词数据
         self.listcorpus = []
+        # 地名数据
+        self.listcorpus_place=[]
         # 原始数据索引，放在外面，方便后续由应用处理
         self.corpu_indexes = []
         # 分词工具，但看起来效果一般，可改用hanlp2.0或是ltp的
@@ -65,6 +72,7 @@ class ClusterAnalyzer():
         # 停用词表，这个也可以改造
         self.CoreStopWordDictionary = JClass('com.hankcs.hanlp.dictionary.stopword.CoreStopWordDictionary')
         self.model_path = model_path
+        self.Algorithm=''
 
     '''
     初始化word2vec模型
@@ -95,10 +103,10 @@ class ClusterAnalyzer():
             self.corpus.append(document)
         else:
             # 先分词处理变成空格分隔字串
-            corpus_, listcorpus_ = self.preprocess(document)
+            corpus_, listcorpus_ ,natureList= self.preprocess(document)
             self.corpus.append(corpus_)
             self.listcorpus.append(listcorpus_)
-
+            self.listcorpus_place.append([term[0] for term  in  zip(listcorpus_,natureList) if term[1].startsWith('ns')])
     '''
     将语料转成向量，根据不同的模型，被转成不同的向量
     '''
@@ -139,7 +147,6 @@ class ClusterAnalyzer():
             vectors=sparseVectors.toarray()
 
 
-
         if self.model == self.MODELS.TFIDFVECTORIZER_PCA:
             transformer = TfidfVectorizer()
             tfidf = transformer.fit_transform(self.corpus)
@@ -163,9 +170,58 @@ class ClusterAnalyzer():
             if self.model == self.MODELS.BERT_PCA:
                 pca = PCA(n_components=10)
                 vectors = pca.fit_transform(vectors)
+
+        if self.model == self.MODELS.COUNTPLACEVECTORIZER:
+            vectorizer = CountVectorizer(min_df=1, max_df=1.0, token_pattern='\\b\\w+\\b')
+            count_train = vectorizer.fit_transform(self.corpus)
+            vectors = count_train.toarray()
+
+
+            geo=GeoKG()
+            mlb = preprocessing.MultiLabelBinarizer(sparse_output=False)
+            mlb.fit_transform([geo.place_vector_dict['1'].keys(),
+                               geo.place_vector_dict['2'].keys(),
+                               geo.place_vector_dict['3'].keys(),
+                               geo.place_vector_dict['4'].keys(),
+                               geo.place_vector_dict['5'].keys(),
+                               ['无分类']])
+
+            # placeVectors=[]
+            placeAllList=[]
+            for place in self.listcorpus_place:
+                if len(place)==0:
+                    #一定要有一个无分类，不然就会是[0...0]，计算时还是会不一样的
+                    placeAllList.append(['无分类','无分类','无分类','无分类','无分类'])
+                    continue
+                place_sure=geo.parsePlaces(place)
+                placelist=[]
+                for level in range(5, 1,-1):
+                    placelist.extend(list(place_sure[str(level)]))
+                placeAllList.append(placelist)
+            placeVectors=mlb.transform(placeAllList)
+            # vectors=placeVectors.toarray()
+
+
+            #     placeVectors.append(placeVector[1:])
+            # placeVectors=np.array(placeVectors)
+            # imp_mean = SimpleImputer(missing_values=0,strategy='constant',fill_value=0)
+            # placeVectors=imp_mean.fit_transform(placeVectors.toarray())
+            mask = (placeVectors == 0).all(0)
+            # column_indices = np.where(mask)[0]
+            placeVectors = placeVectors[:, ~mask]
+            vectors=np.hstack((vectors,placeVectors))
+            # np.set_printoptions(linewidth=2000)
+            # print(vectors)
+            # s=preprocessing.StandardScaler()
+            # placeVectors=s.fit_transform(vectors)
+
+
+
+
+
         logging.info('corpu2vector use %s transformed %d rows', self.model, len(self.corpu_indexes))
         # logging.info(list(zip(self.corpu_indexes, self.listcorpus)))
-        self.document_ = list(zip(self.corpu_indexes, vectors))
+        self.document_ = list(zip(self.corpu_indexes, vectors,placeVectors))
 
     '''
     预处理文本，对于word2vec要去除不在单词表中的词
@@ -174,6 +230,7 @@ class ClusterAnalyzer():
     def preprocess(self, document):
         termList = self.segment.seg(document)
         wordList = []
+        natureList = []
         if self.model == self.MODELS.WORD2VEC:
             for term in termList:
                 if self.word2vec_model.has_index_for(term.word):
@@ -182,7 +239,8 @@ class ClusterAnalyzer():
             for term in termList:
                 if not (self.CoreStopWordDictionary.contains(term.word) or term.nature.startsWith("w")):
                     wordList.append(term.word)
-        return ' '.join(wordList), wordList
+                    natureList.append(term.nature)
+        return ' '.join(wordList), wordList,natureList
 
     '''
     直接将向量矩阵加载进来，方便在外部进行向量化
@@ -206,6 +264,74 @@ class ClusterAnalyzer():
         # similarity = cos1/float(cos21*cos22)
         similarity = np.inner(vector1, vector2)
         return similarity
+    '''
+    密度聚类
+    '''
+    def dbscean_cluster(self,limit_eval=0.2):
+        self.Algorithm='DBScan'
+        self.limit_eval = limit_eval
+        vectors=[doc[1] for doc in self.document_]
+        # 簇
+        clusters = {}
+        cluster_text = {}
+        db = DBSCAN(eps=limit_eval, min_samples=1,metric='cosine',algorithm="brute").fit(vectors)
+
+        for i,label in enumerate(db.labels_):
+            # if label!=-1:
+                clusters.setdefault(label, []).append(vectors[i])
+                cluster_text.setdefault(label, []).append(self.document_[i][0])
+        return clusters,cluster_text
+
+
+    '''
+    singlepass的聚类，结果其实也差不多
+    limit_eval在0~1之间，越小簇越少
+    '''
+    def doc2vec_single_pass(self,limit_eval):
+        self.Algorithm='SinglePass'
+        self.limit_eval = limit_eval
+        # 簇
+        clusters = {}
+        # 簇心
+        cluster_cores = []
+        cluster_text = {}
+        num_topic = 0
+        cnt = 0
+        # cluster = Cluster()
+
+        # for document in self.document_:
+        #     cluster.add_document(document)
+        for text,vector,  place in self.document_:
+            if num_topic == 0:
+                clusters.setdefault(num_topic, []).append(vector)
+                # 这是核心簇，应该加上vector，还是vectors
+                # cluster_cores[num_topic] = vector
+                cluster_cores.append(vector)
+                cluster_text.setdefault(num_topic, []).append(text)
+                num_topic += 1
+            else:
+                #计算最相似的值和索引号
+                x=pairwise.cosine_similarity(np.array(cluster_cores),[vector])
+                max_index=np.argmax(x,axis=0)[0]
+                max_value=x[max_index]
+                # max_index, max_value = self.get_doc2vec_similarity(cluster_cores, vector)
+                if max_value > limit_eval:
+                    clusters[max_index].append(vector)
+                    core = np.mean(clusters[max_index], axis=0)  # 更新簇中心
+                    cluster_cores[max_index] = core
+                    cluster_text[max_index].append(text)
+                else:  # 创建一个新簇
+                    clusters.setdefault(num_topic, []).append(vector)
+                    # cluster_cores[num_topic] = vector
+                    cluster_cores.append(vector)
+                    cluster_text.setdefault(num_topic, []).append(text)
+                    num_topic += 1
+            cnt += 1
+            if cnt % 100 == 0:
+                print('processing {}...'.format(cnt))
+        return clusters, cluster_text
+
+
 
     '''
     /**
@@ -217,6 +343,8 @@ class ClusterAnalyzer():
      */
     '''
     def repeatedBisection(self, nclusters, limit_eval):
+        self.Algorithm = 'reBisection'
+        self.limit_eval=limit_eval
         numSamples = len(self.document_)
         if nclusters > numSamples:
             logging.error("传入聚类数目%d大于文档数量%d，已纠正为文档数量\n", nclusters, numSamples)
@@ -226,6 +354,7 @@ class ClusterAnalyzer():
         clusters_ = []
         for document in self.document_:
             cluster.add_document(document)
+        #这不费劲嘛，
         cluster.section(2)
         self.refine_clusters(cluster.sectioned_clusters())
 
@@ -366,7 +495,7 @@ class ClusterAnalyzer():
         return sum
 
     def saveResult(self, cluster):
-        with open('./result/cluster_%s_%s.json' % ('hanlp', self.model.value), 'w+', encoding='utf-8') as save_obj:
+        with open('./result/cluster_%s_%s%s_%s.json' % (self.Algorithm, self.model.value,str(len(self.document_)),str(self.limit_eval)), 'w+', encoding='utf-8') as save_obj:
             for k in cluster:
                 data = dict()
                 # data["cluster_id"] = k[0]
@@ -382,8 +511,12 @@ class ClusterAnalyzer():
 class Cluster():
 
     def __init__(self):
-        #所有向量
+        #所有向量及index
         self.documents_ = []
+
+        self.vectors=[]
+
+        self.placeVectors=[]
         #所有向量和，作为组合向量
         self.composite_ = []
         #判定准则值
@@ -433,10 +566,12 @@ class Cluster():
     def add_document(self, doc):
         nrm = np.linalg.norm(doc[1])
         if nrm != 0:  # 有空的
-            doc = (doc[0], doc[1] / nrm)
+            doc = (doc[0], doc[1] / nrm,doc[2])
         else:
-            doc = (doc[0], np.array(doc[1]))
+            doc = (doc[0], np.array(doc[1]),doc[2])
         self.documents_.append(doc)
+        self.vectors.append(doc[1])
+        # self.placeVectors.append(doc[2])
         if len(self.composite_) == 0:
             self.composite_ = np.zeros(len(doc[1]))
         if math.isnan(doc[1][0]) or math.isnan(self.composite_[0]):
@@ -452,7 +587,10 @@ class Cluster():
             # 删了话，后面位置不对了，这里标记删除
             # del self.documents_[item_id]
             self.documents_[item_id] = None
+            self.vectors[item_id]=None
+            # self.placeVectors[item_id] = None
             self.composite_ = self.composite_ - doc[1]
+
         except Exception:
             print(doc)
 
@@ -461,6 +599,9 @@ class Cluster():
     '''
     def refresh(self):
         self.documents_=[doc for doc in self.documents_ if doc is not None]
+        # self.vectors.remove(None)
+        self.vectors=[v for v in self.vectors if v is not None]
+        self.placeVectors = [v for v in self.placeVectors if v is not None]
 
     def sectioned_gain(self):
         return self.sectioned_gain_
@@ -504,14 +645,16 @@ class Cluster():
         count = 1
         potential = 0.0
 
-        # 每一个向量到这个随机质心的距离
-        for i in range(numSamples):
-            dist = 1 - self.similarity_cosine(self.documents_[i][1], self.documents_[index][1])
-            potential = potential + dist
-            closest[i] = dist
-
+        # 每一个向量到这个随机质心的距离，改用相似矩阵来处理了
+        # for i in range(numSamples):
+        #     dist = 1 - self.similarity_cosine(self.documents_[i][1], self.documents_[index][1])
+        #     potential = potential + dist
+        #     closest[i] = dist
+        closest=pairwise.cosine_distances([self.documents_[index][1]],self.vectors)[0]
+        potential=sum(closest)
         # choose    each    center
         while (count < k):
+            #找了一个到质心距离的中间随机值，在这个值的外面选一个质心
             randval = random.random() * potential
             for i in range(numSamples):
                 dist = closest[i]
@@ -522,6 +665,7 @@ class Cluster():
                 i = i - 1
             centroids.append(self.documents_[i])
             count += 1
+            #加了这个，k=2时没必要进行后面的,实际也没有运行
             if count >= k: break
             new_potential = 0.0
             for i_ in range(numSamples):
@@ -534,14 +678,42 @@ class Cluster():
             potential = new_potential
         return centroids
 
-
+    '''
+    利用余弦相似，其实这里反而是控制的重点，所有的计算都是计算向量相似为基础的
+    '''
     def similarity_cosine(self, vector1, vector2):
         # cos1 = np.sum(vector1*vector2)
         # cos21 = np.sqrt(sum(vector1**2))
         # cos22 = np.sqrt(sum(vector2**2))
         # similarity = cos1/float(cos21*cos22)
-        similarity = np.inner(vector1, vector2)
+        # similarity = np.inner(vector1, vector2)
+        # w=np.arrray((vector1))
+        # w=np.ones_like(vector1)
+        # w[0,4:]*0.1
+        similarity=1-pairwise.distance.cosine(vector1,vector2)
         return similarity
+
+
+    def similarity_cosine_matrix(self, vectors1, vectors2):
+        cos1 = np.tensordot(vectors1, vectors2, axes=(1, 1))
+        cos2 = np.tensordot(vectors2, vectors1, axes=(1, 1))
+        # 2 - 范数：║x║2 =（│x1│2 +│x2│2 +…+│xn│2）1 / 2
+        cos21 = np.linalg.norm(vectors1, axis=1)
+        # cos21 = np.sqrt(sum(vector1**2))
+        cos22 = np.linalg.norm(vectors2, axis=1)
+        # cos22 = np.sqrt(sum(vector2**2))
+        score_wds1= np.divide(cos1, (np.outer(cos21, cos22)))
+        score_wds2 = np.divide(cos2, (np.outer(cos22, cos21)))
+        score_wds=pairwise.cosine_similarity(vectors1,vectors2)
+        #加权平均 similarity是越小越接近
+        similarity1 = np.average(np.max(score_wds, axis=1), axis=0)
+        similarity2 = np.average(np.max(score_wds, axis=0), axis=0)
+        similarity=(similarity1+similarity2)/2
+
+        if str(similarity) == 'nan':
+            return 0.0
+        else:
+            return similarity
 
     '''
     分簇，根据质心进行距离判断
@@ -555,32 +727,42 @@ class Cluster():
         for i in range(nclusters):
             newCluster = Cluster()
             self.sectioned_clusters_.append(newCluster)
+        centroids_=[c[1] for c in centroids]
 
-        for i in range(numSamples):
-            max_similarity = -1.0
-            max_index = 0
-            for j, centroid in enumerate(centroids):
-                similarity = self.similarity_cosine(self.documents_[i][1], centroid[1])
-                # 这里就是判断更接近哪一个质心，就划分到质心所在簇
-                if (max_similarity < similarity):
-                    max_similarity = similarity
-                    max_index = j
-            self.sectioned_clusters_[max_index].add_document(self.documents_[i])
+        #不要一个一个比较了，直接用矩阵计算出相似矩阵
+        #再用argmax得出索引，再进行add_document
+        x=pairwise.cosine_similarity(centroids_,self.vectors)
+        for max_index,max_doc in zip(np.argmax(x,axis=0),self.documents_):
+            self.sectioned_clusters_[max_index].add_document(max_doc)
+        # for i in range(numSamples):
+        #     max_similarity = -1.0
+        #     max_index = 0
+        #     for j, centroid in enumerate(centroids):
+        #         similarity = self.similarity_cosine(self.documents_[i][1], centroid[1])
+        #         # 这里就是判断更接近哪一个质心，就划分到质心所在簇
+        #         if (max_similarity < similarity):
+        #             max_similarity = similarity
+        #             max_index = j
+        #     self.sectioned_clusters_[max_index].add_document(self.documents_[i])
 
 
 '''
 
 '''
 if __name__ == "__main__":
-    analyzer = ClusterAnalyzer()
-    analyzer.addDocument("赵一", "流行, 流行, 流行, 流行, 流行, 流行, 流行, 流行, 流行, 流行, 蓝调, 蓝调, 蓝调, 蓝调, 蓝调, 蓝调, 摇滚, 摇滚, 摇滚, 摇滚");
-    analyzer.addDocument("钱二", "爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲");
-    analyzer.addDocument("张三", "古典, 古典, 古典, 古典, 民谣, 民谣, 民谣, 民谣");
-    analyzer.addDocument("李四", "爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 爵士, 金属, 金属, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲");
-    analyzer.addDocument("王五", "流行, 流行, 流行, 流行, 摇滚, 摇滚, 摇滚, 嘻哈, 嘻哈, 嘻哈");
-    analyzer.addDocument("马六", "古典, 古典, 古典, 古典, 古典, 古典, 古典, 古典, 摇滚");
+    analyzer = ClusterAnalyzer(model=ClusterAnalyzer.MODELS.COUNTPLACEVECTORIZER)
+    analyzer.addDocument("赵一", "流行, 流行, 流行, 流行, 流行, 流行, 流行, 流行, 流行, 蓝调, 蓝调, 蓝调, 蓝调, 蓝调, 蓝调, 摇滚, 摇滚, 摇滚, 摇滚");
+    analyzer.addDocument("钱二", "山东, 山东, 山东, 山东, 山东, 山东, 山东, 山东, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲");
+    analyzer.addDocument("张三", "广西, 广西, 广西, 广西, 民谣, 民谣, 民谣, 民谣");
+    analyzer.addDocument("李四", "山东, 山东, 金属, 金属, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲");
+    analyzer.addDocument("王五", "济南, 济南, 济南, 流行, 摇滚, 舞曲, 民谣, 济南, 济南, 济南");
+    analyzer.addDocument("马六", "广西, 摇滚, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 摇滚");
+    analyzer.addDocument("周七", "广西, 摇滚, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 舞曲, 摇滚");
     analyzer.corpu2vector()
-    print(analyzer.document_)
+    # print(analyzer.document_)
 
-    result = analyzer.repeatedBisection(0,1)
+    # result = analyzer.repeatedBisection(0,0.2)
+    # v,result= analyzer.doc2vec_single_pass(0.2)
+    v, result = analyzer.dbscean_cluster(0.2)
+
     print(len(result), result)
